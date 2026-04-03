@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
   // Map runtime env vars so Northflank can inject them without a rebuild.
   // All NEXT_PUBLIC_* values here are read at server startup from process.env.
   env: {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "",
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000",
     NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "AIzaSyAwOYjBldcL6Y33_ZwcgL-gX-kGs0Ec_S4",
     NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "societyos-acdc4.firebaseapp.com",
     NEXT_PUBLIC_FIREBASE_PROJECT_ID: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "societyos-acdc4",

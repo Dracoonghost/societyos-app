@@ -6,12 +6,13 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import KnowledgePackChat from "@/components/knowledge-pack/KnowledgePackChat";
 import {
   ArrowLeft,
   Brain,
   Loader2,
   FileText,
-  Image,
+  Image as ImageIcon,
   CheckCircle2,
   AlertCircle,
   Clock,
@@ -19,7 +20,7 @@ import {
   Upload,
   LayoutDashboard,
   FolderOpen,
-  GitBranch,
+  MessageSquareQuote,
 } from "lucide-react";
 
 const MindMapView = dynamic(
@@ -29,7 +30,7 @@ const MindMapView = dynamic(
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-type TabId = "overview" | "files" | "mind-map";
+type TabId = "overview" | "files" | "chat";
 
 interface KnowledgePackFile {
   id: string;
@@ -70,7 +71,7 @@ interface KnowledgePack {
 const TABS: { id: TabId; label: string; icon: React.ElementType }[] = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "files", label: "Files", icon: FolderOpen },
-  { id: "mind-map", label: "Mind Map", icon: GitBranch },
+  { id: "chat", label: "Chat", icon: MessageSquareQuote },
 ];
 
 const FILE_STATUS: Record<string, { icon: React.ElementType; label: string; color: string }> = {
@@ -85,13 +86,14 @@ const FILE_STATUS: Record<string, { icon: React.ElementType; label: string; colo
 export default function KnowledgePackDetailPage() {
   const params = useParams();
   const packId = params.id as string;
-  const { getIdToken } = useAuth();
+  const { getIdToken, loading: authLoading } = useAuth();
   const [pack, setPack] = useState<KnowledgePack | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const packStatus = pack?.status;
 
   const fetchPack = useCallback(async () => {
     const token = await getIdToken();
@@ -111,12 +113,12 @@ export default function KnowledgePackDetailPage() {
   }, [packId, getIdToken]);
 
   useEffect(() => {
-    fetchPack();
-  }, [fetchPack]);
+    if (!authLoading) fetchPack();
+  }, [fetchPack, authLoading]);
 
   // SSE for processing progress
   useEffect(() => {
-    if (!pack || pack.status !== "processing") return;
+    if (packStatus !== "processing") return;
 
     let es: EventSource | null = null;
 
@@ -143,7 +145,7 @@ export default function KnowledgePackDetailPage() {
 
     connectSSE();
     return () => { es?.close(); };
-  }, [pack?.status, packId, getIdToken, fetchPack]);
+  }, [packStatus, packId, getIdToken, fetchPack]);
 
   const handleDeleteFile = async (fileId: string) => {
     setDeletingFileId(fileId);
@@ -294,8 +296,14 @@ export default function KnowledgePackDetailPage() {
           fileInputRef={fileInputRef}
         />
       )}
-      {activeTab === "mind-map" && (
-        <MindMapView data={pack.mind_map} packName={pack.name} />
+      {activeTab === "chat" && (
+        <KnowledgePackChat
+          packId={pack.id}
+          packName={pack.name}
+          status={pack.status}
+          totalChunks={pack.total_chunks ?? 0}
+          getIdToken={getIdToken}
+        />
       )}
     </div>
   );
@@ -374,6 +382,22 @@ function OverviewTab({ pack }: { pack: KnowledgePack }) {
           </div>
         </div>
       )}
+
+      <div className="flex flex-col gap-3">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-medium mb-1" style={{ color: "var(--text-3)" }}>
+              Knowledge Map
+            </h3>
+            <p className="text-sm" style={{ color: "var(--text-2)" }}>
+              Quick view of how themes and source files connect inside this pack.
+            </p>
+          </div>
+
+        </div>
+
+        <MindMapView data={pack.mind_map} packName={pack.name} compact />
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-3">
@@ -470,7 +494,7 @@ function FilesTab({
               >
                 <div className="flex items-center gap-3 min-w-0">
                   {isImage(f.content_type) ? (
-                    <Image size={16} style={{ color: "var(--accent-cyan)" }} />
+                    <ImageIcon size={16} style={{ color: "var(--accent-cyan)" }} />
                   ) : (
                     <FileText size={16} style={{ color: "var(--accent-amber)" }} />
                   )}
