@@ -104,7 +104,6 @@ function BrandStatusPoller({
           const msg = JSON.parse(event.data);
           if (msg.status || msg.step) {
             onStatusUpdate({
-              id: brandId,
               status: msg.status ?? "",
               current_step: msg.step ?? null,
               sections_generated: msg.sections_generated ?? null,
