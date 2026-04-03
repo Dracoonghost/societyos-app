@@ -239,10 +239,10 @@ export default function AudienceBuilderModal({
       if (!res.ok) throw new Error("Failed to save audience");
       const payload = await res.json() as { audience?: AudienceDocument } & Partial<AudienceDocument>;
       const doc = payload.audience ?? payload;
-      setCreatedId(doc.id);
+      setCreatedId(doc.id ?? null);
       
       toast.success("Audience profile saved!");
-      if (onSaved) onSaved(doc);
+      if (onSaved) onSaved(doc as AudienceDocument);
       
       setStep(3);
     } catch (err: unknown) {

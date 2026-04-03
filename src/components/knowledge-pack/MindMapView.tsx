@@ -43,7 +43,7 @@ interface MindMapViewProps {
   compact?: boolean;
 }
 
-interface MindMapNodeData {
+interface MindMapNodeData extends Record<string, unknown> {
   label: string;
   nodeType: MindMapNode["type"];
   summary?: string;
@@ -136,7 +136,7 @@ function resolveNodeCollisions(nodes: MindMapFlowNode[]) {
   const positions = new Map(
     nodes.map((node) => {
       const { width, height } = getNodeDimensions(node.data.nodeType, node.data.label, node.data.summary);
-      return [node.id, { x: node.position.x + width / 2, y: node.position.y + height / 2, width, height, type: node.data.nodeType }] as const;
+      return [node.id, { x: node.position.x + width / 2, y: node.position.y + height / 2, width, height, type: node.data.nodeType }] as [string, { x: number; y: number; width: number; height: number; type: string }];
     }),
   );
 
@@ -719,7 +719,7 @@ export default function MindMapView({ data, packName, compact = false }: MindMap
                   border: "1px solid var(--border-subtle)",
                   borderRadius: 18,
                 }}
-                nodeColor={(node) => getTypeMeta((node.data as MindMapNodeData).nodeType).accent}
+                nodeColor={(node) => getTypeMeta((node.data as unknown as MindMapNodeData).nodeType).accent}
                 maskColor="rgba(11, 15, 20, 0.72)"
               />
               <Controls showInteractive={false} position="bottom-left" />
