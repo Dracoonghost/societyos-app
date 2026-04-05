@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, Suspense, useRef } from "react";
+import React, { useState, useEffect, Suspense, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Navbar } from "@/components/ui/navbar";
+import { useSimulationPoller, type SimPollEvent } from "@/hooks/useSimulationPoller";
 
 /* ------------------------------------------------------------------ */
 /*  Types & constants                                                  */
@@ -1177,6 +1178,43 @@ function SimulationIntakeInner() {
   const [submitting, setSubmitting] = useState(false);
   const [simEvents, setSimEvents] = useState<SimDisplayEvent[]>([]);
   const [pendingRedirectId, setPendingRedirectId] = useState<string | null>(null);
+  const [simReviewId, setSimReviewId] = useState<string | null>(null);
+  const [pollerEnabled, setPollerEnabled] = useState(false);
+
+  // Reshape polled events (wrapped in data field) into flat SimDisplayEvent union
+  const handlePolledEvents = useCallback((events: SimPollEvent[]) => {
+    const SIM_TYPES = new Set(["panel_ready", "persona_start", "reaction", "debate_start", "debate_message", "verdict_start", "verdict"]);
+    const mapped: SimDisplayEvent[] = [];
+    for (const e of events) {
+      if (e.type === "done") {
+        const doneParsed = e.data as { review_id?: string };
+        if (doneParsed.review_id) setPendingRedirectId(doneParsed.review_id);
+        setPollerEnabled(false);
+        continue;
+      }
+      if (e.type === "error") {
+        const errParsed = e.data as { message?: string };
+        toast.error(errParsed.message || "Simulation failed.");
+        setSubmitting(false);
+        setPollerEnabled(false);
+        setSimEvents([]);
+        continue;
+      }
+      if (SIM_TYPES.has(e.type)) {
+        mapped.push({ type: e.type, ...e.data } as unknown as SimDisplayEvent);
+      }
+    }
+    if (mapped.length > 0) {
+      setSimEvents((prev) => [...prev, ...mapped]);
+    }
+  }, []);
+
+  useSimulationPoller({
+    reviewId: simReviewId,
+    enabled: pollerEnabled,
+    onEvents: handlePolledEvents,
+    getToken: getIdToken,
+  });
 
   const config = useCase ? SIM_USE_CASES.find((u) => u.id === useCase) ?? null : null;
 
@@ -1266,43 +1304,24 @@ function SimulationIntakeInner() {
         depth: "quick",
       };
 
-      const res = await fetch(`${API_URL}/api/founder/simulate/stream`, {
+      const res = await fetch(`${API_URL}/api/founder/simulate`, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
       });
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { detail?: string }).detail || "Simulation failed. Please try again.");
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const { review_id } = (await res.json()) as { review_id: string };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
-          const event = JSON.parse(part.slice(6)) as { type: string; review_id?: string; message?: string };
-          if (event.type === "done" && event.review_id) {
-            setPendingRedirectId(event.review_id);
-            continue;
-          }
-          if (event.type === "error") {
-            throw new Error(event.message || "Simulation failed.");
-          }
-          const simTypes = new Set(["panel_ready", "persona_start", "reaction", "debate_start", "debate_message", "verdict_start", "verdict"]);
-          if (simTypes.has(event.type)) {
-            setSimEvents((prev) => [...prev, event as SimDisplayEvent]);
-          }
-        }
-      }
+      // Persist review_id so re-connecting after a tab close is possible
+      try { sessionStorage.setItem("sim_review_id", review_id); } catch { /* ignored */ }
+
+      setSimReviewId(review_id);
+      setPollerEnabled(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Something went wrong.";
       toast.error(msg);

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import {
   Users,
@@ -16,6 +16,7 @@ import {
   ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useSimulationPoller, type SimPollEvent } from "@/hooks/useSimulationPoller";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -145,7 +146,78 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
   const [statusMsg, setStatusMsg] = useState("");
   const [expandedReaction, setExpandedReaction] = useState<string | null>(null);
 
+  // Polling state
+  const [simReviewId, setSimReviewId] = useState<string | null>(null);
+  const [pollerEnabled, setPollerEnabled] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
+
+  // Map polled events to component state
+  const handlePolledEvents = useCallback((events: SimPollEvent[]) => {
+    for (const e of events) {
+      const d = e.data as Record<string, unknown>;
+      switch (e.type) {
+        case "panel_ready":
+          setPanelMembers(d.members as { name: string; role: string }[]);
+          setStatusMsg("Panel assembled — collecting reactions…");
+          break;
+        case "persona_start":
+          setActivePersona(d.name as string);
+          setStatusMsg(`${d.name as string} is reacting…`);
+          break;
+        case "reaction":
+          setReactions((prev) => [...prev, {
+            name: d.name as string, role: d.role as string, message: d.message as string,
+            comprehension: d.comprehension as number | undefined, engagement: d.engagement as number | undefined,
+            confusion: d.confusion as string | undefined, would_share: d.would_share as boolean | undefined,
+          }]);
+          setActivePersona(null);
+          break;
+        case "debate_start":
+          setStatusMsg("Audience members are discussing…");
+          break;
+        case "debate_message":
+          setDebate((prev) => [...prev, {
+            from_name: d.from_name as string, to_names: (d.to_names as string[]) ?? [],
+            message: d.message as string, role: d.role as string,
+          }]);
+          break;
+        case "verdict_start":
+          setStatusMsg("Generating verdict…");
+          break;
+        case "verdict":
+          setVerdict({
+            summary: d.verdict as string,
+            overall_sentiment: undefined,
+            key_themes: (d.what_worked as string[] | undefined)?.length
+              ? (d.what_worked as string[])
+              : undefined,
+            recommendation: ((d.recommendations as string[] | undefined) ?? [])[0] ?? undefined,
+          });
+          break;
+        case "done":
+          setDoneReviewId(d.review_id as string);
+          setPhase("done");
+          setStatusMsg("Simulation complete.");
+          setActivePersona(null);
+          setPollerEnabled(false);
+          fetchPastSims();
+          break;
+        case "error":
+          toast.error((d.message as string) || "Simulation failed.");
+          setPhase("setup");
+          setPollerEnabled(false);
+          break;
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useSimulationPoller({
+    reviewId: simReviewId,
+    enabled: pollerEnabled,
+    onEvents: handlePolledEvents,
+    getToken,
+  });
 
   const fetchPastSims = async () => {
     const token = await getToken();
@@ -214,17 +286,13 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
     setDoneReviewId(null);
     setStatusMsg("Connecting to audience…");
 
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-
     try {
-      const res = await fetch(`${API_URL}/api/founder/simulate/stream`, {
+      const res = await fetch(`${API_URL}/api/founder/simulate`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        signal: ctrl.signal,
         body: JSON.stringify({
           idea: reviewIdea,
           title: reviewTitle,
@@ -233,102 +301,22 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
             : { audience_id: selectedId }),
           workflow_type: "simulation",
           depth: "quick",
-          panel_size: 5,
+          panel_size: 10,
           parent_review_id: reviewId,
           ...(context ? { context } : {}),
         }),
       });
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6).trim();
-          if (!raw) continue;
-          let evt: Record<string, unknown>;
-          try { evt = JSON.parse(raw); } catch { continue; }
-
-          switch (evt.type) {
-            case "panel_ready":
-              setPanelMembers(evt.members as { name: string; role: string }[]);
-              if (evt.review_id) setDoneReviewId(evt.review_id as string);
-              setStatusMsg("Panel assembled — collecting reactions…");
-              break;
-            case "persona_start":
-              setActivePersona(evt.name as string);
-              setStatusMsg(`${evt.name} is reacting…`);
-              break;
-            case "reaction":
-              setReactions((prev) => [
-                ...prev,
-                {
-                  name: evt.name as string,
-                  role: evt.role as string,
-                  message: evt.message as string,
-                  comprehension: evt.comprehension as number | undefined,
-                  engagement: evt.engagement as number | undefined,
-                  confusion: evt.confusion as string | undefined,
-                  would_share: evt.would_share as boolean | undefined,
-                },
-              ]);
-              setActivePersona(null);
-              break;
-            case "debate_start":
-              setStatusMsg("Audience members are discussing…");
-              break;
-            case "debate_message":
-              setDebate((prev) => [
-                ...prev,
-                {
-                  from_name: evt.from_name as string,
-                  to_names: (evt.to_names as string[]) ?? [],
-                  message: evt.message as string,
-                  role: evt.role as string,
-                },
-              ]);
-              break;
-            case "verdict_start":
-              setStatusMsg("Generating verdict…");
-              break;
-            case "verdict":
-              setVerdict({
-                summary: evt.summary as string,
-                overall_sentiment: evt.overall_sentiment as string | undefined,
-                key_themes: evt.key_themes as string[] | undefined,
-                recommendation: evt.recommendation as string | undefined,
-              });
-              break;
-            case "done":
-              setDoneReviewId(evt.review_id as string);
-              setPhase("done");
-              setStatusMsg("Simulation complete.");
-              setActivePersona(null);
-              fetchPastSims(); // refresh history
-              break;
-            case "error":
-              toast.error((evt.message as string) || "Simulation failed.");
-              setPhase("setup");
-              break;
-          }
-        }
-      }
+      const { review_id } = (await res.json()) as { review_id: string };
+      setSimReviewId(review_id);
+      setPollerEnabled(true);
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
-        toast.error("Simulation stream failed.");
+        toast.error("Simulation failed. Please try again.");
         setPhase("setup");
       }
     }
@@ -411,8 +399,12 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
               break;
             case "verdict":
               setVerdict({
-                summary: evt.summary as string, overall_sentiment: evt.overall_sentiment as string | undefined,
-                key_themes: evt.key_themes as string[] | undefined, recommendation: evt.recommendation as string | undefined,
+                summary: evt.verdict as string,
+                overall_sentiment: undefined,
+                key_themes: (evt.what_worked as string[] | undefined)?.length
+                  ? (evt.what_worked as string[])
+                  : undefined,
+                recommendation: ((evt.recommendations as string[] | undefined) ?? [])[0] ?? undefined,
               });
               break;
             case "done":
