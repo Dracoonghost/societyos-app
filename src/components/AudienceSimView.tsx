@@ -91,6 +91,7 @@ interface PastSim {
   createdAt: string | null;
   audienceId: string | null;
   panelSize: number | null;
+  status?: string;
   verdict: PastSimVerdict;
   reactionCount: number;
 }
@@ -264,6 +265,7 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
           switch (evt.type) {
             case "panel_ready":
               setPanelMembers(evt.members as { name: string; role: string }[]);
+              if (evt.review_id) setDoneReviewId(evt.review_id as string);
               setStatusMsg("Panel assembled — collecting reactions…");
               break;
             case "persona_start":
@@ -327,6 +329,109 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
     } catch (err: unknown) {
       if ((err as Error).name !== "AbortError") {
         toast.error("Simulation stream failed.");
+        setPhase("setup");
+      }
+    }
+  };
+
+  const runResume = async (simId: string) => {
+    const token = await getToken();
+    if (!token) { toast.error("Not authenticated."); return; }
+
+    setPhase("running");
+    setReactions([]);
+    setDebate([]);
+    setVerdict(null);
+    setDoneReviewId(simId);
+    setStatusMsg("Resuming simulation…");
+
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
+    try {
+      const res = await fetch(`${API_URL}/api/founder/simulate/resume/${simId}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
+          let evt: Record<string, unknown>;
+          try { evt = JSON.parse(raw); } catch { continue; }
+
+          switch (evt.type) {
+            case "panel_ready":
+              setPanelMembers(evt.members as { name: string; role: string }[]);
+              if (evt.review_id) setDoneReviewId(evt.review_id as string);
+              setStatusMsg("Panel assembled — collecting reactions…");
+              break;
+            case "persona_start":
+              setActivePersona(evt.name as string);
+              setStatusMsg(`${evt.name} is reacting…`);
+              break;
+            case "reaction":
+              setReactions((prev) => [
+                ...prev,
+                {
+                  name: evt.name as string, role: evt.role as string,
+                  message: evt.message as string, comprehension: evt.comprehension as number | undefined,
+                  engagement: evt.engagement as number | undefined, confusion: evt.confusion as string | undefined,
+                  would_share: evt.would_share as boolean | undefined,
+                },
+              ]);
+              setActivePersona(null);
+              break;
+            case "debate_start":
+              setStatusMsg("Audience members are discussing…");
+              break;
+            case "debate_message":
+              setDebate((prev) => [
+                ...prev,
+                { from_name: evt.from_name as string, to_names: (evt.to_names as string[]) ?? [],
+                  message: evt.message as string, role: evt.role as string },
+              ]);
+              break;
+            case "verdict_start":
+              setStatusMsg("Generating verdict…");
+              break;
+            case "verdict":
+              setVerdict({
+                summary: evt.summary as string, overall_sentiment: evt.overall_sentiment as string | undefined,
+                key_themes: evt.key_themes as string[] | undefined, recommendation: evt.recommendation as string | undefined,
+              });
+              break;
+            case "done":
+              setDoneReviewId(evt.review_id as string);
+              setPhase("done");
+              setStatusMsg("Simulation complete.");
+              setActivePersona(null);
+              fetchPastSims();
+              break;
+            case "error":
+              toast.error((evt.message as string) || "Resume failed.");
+              setPhase("setup");
+              break;
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if ((err as Error).name !== "AbortError") {
+        toast.error("Resume stream failed.");
         setPhase("setup");
       }
     }
@@ -518,7 +623,12 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
                                 <span className="text-xs font-medium" style={{ color: "var(--text-1)" }}>
                                   {sim.createdAt ? new Date(sim.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "—"}
                                 </span>
-                                {sim.verdict?.overall_sentiment && (
+                                {sim.status && sim.status !== "ready" && (
+                                  <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ backgroundColor: "#f2a93b22", color: "#f2a93b" }}>
+                                    Incomplete
+                                  </span>
+                                )}
+                                {sim.verdict?.overall_sentiment && sim.status === "ready" && (
                                   <span
                                     className="text-xs px-2 py-0.5 rounded-full font-medium"
                                     style={{ backgroundColor: `${sc.color}22`, color: sc.color }}
@@ -537,14 +647,24 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
                               )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
-                              <Link
-                                href={`/simulations/${sim.id}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-xs px-2.5 py-1 rounded-md"
-                                style={{ backgroundColor: "var(--bg-2)", color: "var(--text-3)", border: "1px solid var(--border-subtle)" }}
-                              >
-                                Full report
-                              </Link>
+                              {sim.status && sim.status !== "ready" ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); runResume(sim.id); }}
+                                  className="text-xs px-2.5 py-1 rounded-md font-medium"
+                                  style={{ backgroundColor: "var(--accent-amber)", color: "#000", border: "none" }}
+                                >
+                                  Resume
+                                </button>
+                              ) : (
+                                <Link
+                                  href={`/simulations/${sim.id}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-xs px-2.5 py-1 rounded-md"
+                                  style={{ backgroundColor: "var(--bg-2)", color: "var(--text-3)", border: "1px solid var(--border-subtle)" }}
+                                >
+                                  Full report
+                                </Link>
+                              )}
                               {isOpen ? <ChevronUp size={13} style={{ color: "var(--text-3)" }} /> : <ChevronDown size={13} style={{ color: "var(--text-3)" }} />}
                             </div>
                           </button>
