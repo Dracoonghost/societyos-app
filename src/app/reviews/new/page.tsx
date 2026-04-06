@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Navbar } from "@/components/ui/navbar";
+import { useAnalysisPoller, AnalysisPollEvent } from "@/hooks/useAnalysisPoller";
 
 /* ------------------------------------------------------------------ */
 /*  Types & constants                                                  */
@@ -2650,6 +2651,9 @@ function IntakeFormInner() {
   const [submitting, setSubmitting] = useState(false);
   const [streamEvents, setStreamEvents] = useState<DisplayEvent[]>([]);
   const [personas, setPersonas] = useState<PersonaMeta[]>([]);
+  // Polling state for job-based analysis
+  const [analysisReviewId, setAnalysisReviewId] = useState<string | null>(null);
+  const [analysisPollerEnabled, setAnalysisPollerEnabled] = useState(false);
 
   // Smart intake state
   const [expandedBrief, setExpandedBrief] = useState("");
@@ -2691,6 +2695,36 @@ function IntakeFormInner() {
       })
       .catch(() => {});
   }, []);
+
+  // Handle batches of events from the ARQ analysis job
+  const handlePolledAnalysisEvents = (events: AnalysisPollEvent[]) => {
+    for (const e of events) {
+      const d = e.data as Record<string, unknown>;
+      if (e.type === "done") {
+        const rid = d.review_id as string | undefined;
+        if (rid) router.push(`/reviews/${rid}`);
+        return;
+      }
+      if (e.type === "error") {
+        toast.error((d.message as string) || "Analysis failed.");
+        setSubmitting(false);
+        setStreamEvents([]);
+        setAnalysisPollerEnabled(false);
+        return;
+      }
+      const displayTypes = new Set(["stage", "research_complete", "persona_start", "persona_complete"]);
+      if (displayTypes.has(e.type)) {
+        setStreamEvents((prev) => [...prev, { type: e.type, ...d } as DisplayEvent]);
+      }
+    }
+  };
+
+  useAnalysisPoller({
+    reviewId: analysisReviewId,
+    enabled: analysisPollerEnabled,
+    onEvents: handlePolledAnalysisEvents,
+    getToken: getIdToken,
+  });
 
   const config = useCase ? USE_CASE_CONFIGS.find((u) => u.id === useCase) ?? null : null;
 
@@ -2764,7 +2798,7 @@ function IntakeFormInner() {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      const endpoint = `${API_URL}/api/founder/analyze/stream`;
+      const endpoint = `${API_URL}/api/founder/analyze/job`;
 
       const effectiveTitle = useCase === "review-feature" && featureName
         ? featureName.slice(0, 100)
@@ -2805,37 +2839,16 @@ function IntakeFormInner() {
 
       const res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body) });
 
-      if (!res.ok || !res.body) {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { detail?: string }).detail || "Analysis failed. Please try again.");
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const { review_id } = (await res.json()) as { review_id: string };
+      setAnalysisReviewId(review_id);
+      setAnalysisPollerEnabled(true);
+      // submitting stays true — LiveProgressState remains visible until navigation
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() ?? "";
-        for (const part of parts) {
-          if (!part.startsWith("data: ")) continue;
-          const event = JSON.parse(part.slice(6)) as { type: string; review_id?: string; message?: string };
-          if (event.type === "done" && event.review_id) {
-            router.push(`/reviews/${event.review_id}`);
-            return;
-          }
-          if (event.type === "error") {
-            throw new Error(event.message || "Analysis failed.");
-          }
-          const displayTypes = new Set(["stage", "research_complete", "persona_start", "persona_complete"]);
-          if (displayTypes.has(event.type)) {
-            setStreamEvents((prev) => [...prev, event as DisplayEvent]);
-          }
-        }
-      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Something went wrong.";
       toast.error(msg);

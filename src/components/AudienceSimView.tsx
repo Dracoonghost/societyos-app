@@ -49,6 +49,9 @@ interface AudienceCard {
   age_band?: string;
   role?: string;
   generated_personas?: unknown[];
+  persona_generation_status?: string; // "idle" | "running" | "complete" | "failed"
+  persona_generation_completed?: number;
+  persona_generation_total?: number;
 }
 
 interface Reaction {
@@ -521,27 +524,52 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {audiences.map((aud) => (
+                    {audiences.map((aud) => {
+                      const personaCount = aud.generated_personas?.length ?? 0;
+                      const isGenerating = aud.persona_generation_status === "running";
+                      const hasNoPersonas = !aud.id.startsWith("prebuilt:") && personaCount === 0 && !isGenerating;
+                      return (
                       <button
                         key={aud.id}
-                        onClick={() => setSelectedId(aud.id === selectedId ? null : aud.id)}
+                        onClick={() => {
+                          if (hasNoPersonas || isGenerating) return;
+                          setSelectedId(aud.id === selectedId ? null : aud.id);
+                        }}
+                        disabled={hasNoPersonas || isGenerating}
                         className="rounded-xl p-4 text-left transition-all"
                         style={{
                           border: `1px solid ${aud.id === selectedId ? "var(--accent-amber)" : "var(--border-subtle)"}`,
                           backgroundColor: aud.id === selectedId ? "rgba(242,169,59,0.06)" : "var(--bg-1)",
                           outline: aud.id === selectedId ? "1px solid var(--accent-amber)" : "none",
+                          opacity: hasNoPersonas || isGenerating ? 0.55 : 1,
+                          cursor: hasNoPersonas || isGenerating ? "not-allowed" : "pointer",
                         }}
                       >
                         <div className="flex items-start justify-between gap-2 mb-1">
                           <p className="text-sm font-semibold" style={{ color: "var(--text-1)" }}>{aud.name}</p>
-                          {(aud.generated_personas?.length ?? 0) > 0 && (
+                          {isGenerating ? (
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded flex-shrink-0 flex items-center gap-1"
+                              style={{ backgroundColor: "rgba(242,169,59,0.15)", color: "var(--accent-amber)" }}
+                            >
+                              <Loader2 size={10} className="animate-spin" />
+                              Generating…
+                            </span>
+                          ) : hasNoPersonas ? (
+                            <span
+                              className="text-xs px-1.5 py-0.5 rounded flex-shrink-0"
+                              style={{ backgroundColor: "rgba(255,80,80,0.12)", color: "#ff6060" }}
+                            >
+                              No personas
+                            </span>
+                          ) : personaCount > 0 ? (
                             <span
                               className="text-xs px-1.5 py-0.5 rounded flex-shrink-0"
                               style={{ backgroundColor: "var(--bg-2)", color: "var(--text-3)" }}
                             >
-                              {aud.generated_personas!.length} personas
+                              {personaCount} personas
                             </span>
-                          )}
+                          ) : null}
                         </div>
                         {aud.description && (
                           <p className="text-xs line-clamp-2 mb-2" style={{ color: "var(--text-3)" }}>
@@ -561,8 +589,22 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
                               </span>
                             ))}
                         </div>
+                        {hasNoPersonas && (
+                          <p className="text-xs mt-2" style={{ color: "#ff6060" }}>
+                            Generate personas in{" "}
+                            <Link
+                              href="/audiences"
+                              className="underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              My Audiences
+                            </Link>{" "}
+                            before simulating.
+                          </p>
+                        )}
                       </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -570,7 +612,10 @@ export default function AudienceSimView({ reviewId, reviewIdea, reviewTitle, res
               <div className="flex items-center gap-3">
                 <button
                   onClick={runSimulation}
-                  disabled={!selectedId}
+                  disabled={!selectedId || (() => {
+                    const sel = [...PREBUILT_AUDIENCES, ...audiences].find((a) => a.id === selectedId);
+                    return !!sel && !sel.id.startsWith("prebuilt:") && (sel.generated_personas?.length ?? 0) === 0;
+                  })()}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{
                     backgroundColor: "var(--accent-amber)",
